@@ -1,10 +1,15 @@
+# ---------------------------------------------------------------------------------------------------------------
+# Repository copy. Run from the repository root. Inputs: data/ (covariate-annotated Seurat objects from
+# Full_merge_RDS_script_with_covariates.R) and results/<analysis output folder> (rename each timestamped output
+# folder to the name used below, e.g. CX_TE_Control_<date> -> results/CX_TE_Control). R 4.4.3.
+# ---------------------------------------------------------------------------------------------------------------
 # ============================================================
 # SCRIPT S1: MODULE SENSITIVITY ANALYSIS
-# Supplementary Analysis
+# Supplementary Analysis for Reviewer Robustness Concerns
 # ============================================================
 #
 # PURPOSE:
-#   Address three questions for 8 framework:
+#   Address three reviewer concerns about the custom 7-module framework:
 #     Q1: How sensitive are key results to individual gene inclusion?
 #     Q2: Do results replicate with canonical (KEGG/Reactome) gene sets?
 #     Q3: Are observed couplings distinguishable from chance?
@@ -38,7 +43,7 @@
 #           derivation, not cherry-picking.
 #
 # INPUTS:
-#   - 8-Module AllResults RDS (donor-level module scores from Script 1)
+#   - 7-Module AllResults RDS (donor-level module scores from Script 1)
 #   - Astrocyte + Neuron Seurat objects (with covariates)
 #
 # OUTPUTS:
@@ -99,6 +104,7 @@ cat("============================================================\n")
 cat("=== MODULE SENSITIVITY ANALYSIS (Supplementary)          ===\n")
 cat("============================================================\n\n")
 
+# --- Region: set to "CX" or "SN" per run ---
 REGION <- "CX"
 
 # --- Covariate settings (must match Script 1/4) ---
@@ -110,11 +116,18 @@ COV_SEX_COL <- "sex"
 # --- Permutation settings ---
 N_PERMUTATIONS <- 1000   # Number of random gene sets for null distribution
 
-library(here)
-astro_file  <- here::here("data", "CX_Astrocytes_withCov.rds")
-neuron_file <- here::here("data", "CX_Neurons_Total_withCov.rds")
-results_rds <- here::here("data", "CX_8Module_AllResults.rds")
-OUT_DIR     <- here::here("results")
+# --- Paths: hardcoded (edit for your system) ---
+if (REGION == "CX") {
+  results_rds <- "results/CX_7Mod/CX_7Module_AllResults.rds"
+  astro_file  <- "data/CX_Astrocytes_withCov.rds"
+  neuron_file <- "data/CX_Neurons_Total_withCov.rds"
+  output_base <- "results"
+} else {
+  results_rds <- "results/SN_7Mod/SN_7Module_AllResults.rds"
+  astro_file  <- "data/SN_Astrocytes.rds"
+  neuron_file <- "data/SN_Neurons_Total.rds"
+  output_base <- "results"
+}
 
 timestamp   <- format(Sys.time(), "%Y%m%d_%H%M")
 results_dir <- file.path(output_base,
@@ -276,6 +289,28 @@ detect_column <- function(meta, possible_names) {
 # =============================================================================
 # MASTER FUNCTION: Run one sensitivity iteration
 # =============================================================================
+#
+# Given a "target panel" gene set and a "reference module" gene set,
+# this function scores both in astrocytes and neurons, computes the
+# partial Spearman correlation (target_score ~ reference_score | covariates)
+# in each cell type, and returns the Fisher Z comparison.
+#
+# This is the atomic unit that gets called in every LOO, canonical-swap,
+# and permutation iteration.
+
+# =============================================================================
+# MASTER FUNCTION: Run one sensitivity iteration
+# =============================================================================
+#
+# Mirrors Script 4's exact workflow:
+#   1. Compute bg-subtracted panel scores for target_genes (the panel being varied)
+#   2. Merge panel scores with RDS-stored module scores (from Script 1)
+#   3. Correlate: module_score ~ panel_score | covariates (partial Spearman)
+#   4. Fisher Z: astrocyte rho vs neuron rho
+#
+# The module scores (reference) are pre-computed by Script 1 as simple mean
+# normalized expression (colMeans), NOT bg-subtracted.  Only the immune
+# panel side is scored via donor_bg_subtracted_score — matching Script 4.
 
 run_one_sensitivity <- function(target_genes,         # genes for the panel being varied
                                 ref_module_col,       # column name in RDS, e.g. "dsRNA_Sensing_Score"
@@ -561,10 +596,20 @@ for (nm in names(canonical_sets)) {
 cat("\n")
 
 
+# =============================================================================
+# SECTION 5: PRE-COMPUTE REFERENCE MODULE SCORES
+# =============================================================================
+# The key result is dsRNA_Sensing × Complement coupling.
+# For LOO on Complement, the reference is dsRNA_Sensing (fixed).
+# For LOO on dsRNA_Sensing, the reference is Complement (fixed).
 
 # =============================================================================
-# SECTION 5: LOAD RDS MODULE SCORES
+# SECTION 5: LOAD RDS MODULE SCORES (matching Script 4 exactly)
 # =============================================================================
+# Script 4 correlates:
+#   - Module scores from RDS (Script 1: simple colMeans, no bg subtraction)
+#   - Immune panel scores computed fresh (donor_bg_subtracted_score)
+# The sensitivity script must use the SAME RDS module scores as reference.
 
 cat("========== LOADING RDS MODULE SCORES ==========\n")
 
@@ -638,6 +683,26 @@ if (!is.na(val_result$rho_astro) && abs(val_result$rho_astro - 0.550) > 0.05) {
 }
 cat("\n")
 
+# --- Pre-compute the Complement panel scores for dsRNA_Sensing LOO ---
+# (When doing LOO on dsRNA_Sensing, the "reference" is the Complement
+#  panel score. But wait — in Script 4's framework, the module side is
+#  always the RDS score. For dsRNA_Sensing LOO, we need a different
+#  approach: we RE-SCORE the dsRNA_Sensing module as a fresh panel
+#  via donor_bg_subtracted_score, and correlate against the RDS
+#  Complement-related module. HOWEVER, there is no "Complement_Score"
+#  in the RDS — complement is only an immune sub-panel.
+#
+#  The correct framing for LOO:
+#    Part A (LOO Complement): fix RDS dsRNA_Sensing_Score, vary panel → bg_subtracted
+#    Part B (LOO dsRNA_Sensing): For this to match Script 4's methodology,
+#      we score the reduced dsRNA_Sensing set as a fresh bg-subtracted panel,
+#      and correlate against the Complement panel score. Both sides
+#      are bg-subtracted here, which is slightly different from Script 4.
+#      ALTERNATIVELY: we re-compute the module score as Script 1 does
+#      (simple colMeans) and correlate against fixed Complement bg-subtracted.
+#
+#  We choose the Script-1-style re-scoring for LOO on modules, since that
+#  exactly matches how the original module scores were generated.)
 
 # Function to compute Script-1-style module scores (simple colMeans, no bg subtraction)
 script1_donor_score <- function(obj, genes, donor_col, cond_col) {
@@ -755,6 +820,9 @@ saveWorkbook(wb_loo_c,
 # =============================================================================
 # PART B: LEAVE-ONE-OUT — dsRNA_Sensing MODULE
 # =============================================================================
+# Design: Fix Complement panel (bg-subtracted), vary dsRNA_Sensing module genes.
+# The module side is RE-SCORED using Script 1's method (colMeans) each iteration,
+# then injected into a copy of the RDS donor_scores.
 
 cat("========== PART B: LOO — dsRNA_Sensing ==========\n")
 
@@ -867,7 +935,8 @@ saveWorkbook(wb_loo_s,
 # =============================================================================
 # PART C: LEAVE-ONE-OUT — INNATE_IMMUNE MODULE
 # =============================================================================
-
+# Design: Fix Complement panel, vary Innate_Immune module genes.
+# (Innate_Immune × Complement is the top Fisher Z result in Script 4.)
 
 cat("========== PART C: LOO — Innate_Immune ==========\n")
 
@@ -931,7 +1000,11 @@ saveWorkbook(wb_loo_i,
 # =============================================================================
 # PART D: CANONICAL PATHWAY SUBSTITUTION
 # =============================================================================
-
+# For Complement variants: bg-subtracted panel (canonical genes), correlated
+#   against fixed RDS dsRNA_Sensing_Score → direct use of run_one_sensitivity.
+# For dsRNA_Sensing variants: re-score module via Script-1-style (colMeans),
+#   inject into donor_scores, correlate against Complement panel
+#   → use run_module_loo.
 
 cat("========== PART D: CANONICAL PATHWAY SUBSTITUTION ==========\n")
 cat("Testing coupling with canonical pathway gene sets...\n\n")
@@ -1021,7 +1094,10 @@ saveWorkbook(wb_canon,
 # =============================================================================
 # PART E: PERMUTATION NULL DISTRIBUTION
 # =============================================================================
-
+# Design: Fix RDS dsRNA_Sensing_Score, draw random panel gene sets of
+#         matching size (scored via bg-subtraction), compute correlation.
+#         This tests whether the Complement panel's coupling is
+#         distinguishable from a random gene set's coupling.
 
 cat("========== PART E: PERMUTATION NULL ==========\n")
 cat(sprintf("Running %d random gene sets (size-matched to Complement = %d genes)...\n",
@@ -1108,6 +1184,8 @@ saveWorkbook(wb_perm,
 # =============================================================================
 # PART F: MODULE OVERLAP WITH CANONICAL PATHWAYS
 # =============================================================================
+# This addresses "Why these genes?" — show that each custom module is
+# a defensible subset of recognized pathway annotations.
 
 cat("========== PART F: PATHWAY OVERLAP ANALYSIS ==========\n")
 

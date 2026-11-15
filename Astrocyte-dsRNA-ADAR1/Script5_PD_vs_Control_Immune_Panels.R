@@ -1,3 +1,8 @@
+# ---------------------------------------------------------------------------------------------------------------
+# Repository copy. Run from the repository root. Inputs: data/ (covariate-annotated Seurat objects from
+# Full_merge_RDS_script_with_covariates.R) and results/<analysis output folder> (rename each timestamped output
+# folder to the name used below, e.g. CX_TE_Control_<date> -> results/CX_TE_Control). R 4.4.3.
+# ---------------------------------------------------------------------------------------------------------------
 # ============================================================
 # SCRIPT 5: PD vs CONTROL — INNATE IMMUNE SUB-PANEL COMPARISON
 # Astrocytes vs Neurons, Covariate-Adjusted
@@ -7,7 +12,11 @@
 #   Before examining dsRNA_Sensing × Immune coupling, establish
 #   whether innate immune sub-panel scores differ between PD and
 #   Control at the donor level, separately for astrocytes and
-#   neurons.  
+#   neurons.  This "baseline landscape" analysis answers:
+#     Q1: Which immune pathways are up/down in PD astrocytes?
+#     Q2: Which are up/down in PD neurons?
+#     Q3: Are PD-vs-Control differences cell-type-specific?
+#
 # STATISTICAL APPROACH:
 #   PRIMARY:   Covariate-adjusted linear model
 #              lm(panel_score ~ age + pmi + sex + condition)
@@ -31,7 +40,13 @@
 #     - PD_vs_Control_Immune_Panels_Summary.xlsx
 #       Sheets: Astrocytes, Neurons, Interaction, GeneLevelDE,
 #               PanelSizeQC, Methods
-#   
+#   Figures:
+#     - Fig1_Violin_PanelScores_ByCondition.pdf
+#     - Fig2_Heatmap_EffectSize_Astro_vs_Neuron.pdf
+#     - Fig3_ForestPlot_CovAdj_Betas.pdf
+#     - Fig4_Interaction_DotPlot.pdf
+#     - Fig5_GeneLevel_Volcano.pdf
+#
 # ============================================================
 
 rm(list = ls()); gc()
@@ -59,12 +74,26 @@ suppressPackageStartupMessages({
 
 set.seed(2026)
 
+# ---- Strip S4 Rle / list columns to base R types (Seurat v5 fix) ----
+strip_rle <- function(df) {
+  df <- as.data.frame(df, stringsAsFactors = FALSE)
+  for (cn in colnames(df)) {
+    x <- df[[cn]]
+    if (!is.atomic(x)) {
+      df[[cn]] <- tryCatch(as.vector(x),
+                           error = function(e) as.character(x))
+    }
+  }
+  df
+}
+
 # =============================================================================
 # SECTION 1: CONFIGURATION
 # =============================================================================
 
 cat("\n========== CONFIGURATION ==========\n")
 
+# --- Region: change to "SN" or "CX" per run ---
 REGION <- "CX"
 
 # --- Covariate control ---
@@ -74,11 +103,38 @@ COV_PMI_COL <- "pmi"
 COV_SEX_COL <- "sex"
 covariate_cols_to_use <- c()
 
-library(here)
-astro_file  <- here::here("data", "CX_Astrocytes_withCov.rds")
-neuron_file <- here::here("data", "CX_Neurons_Total_withCov.rds")
-results_rds <- here::here("data", "CX_8Module_AllResults.rds")
-OUT_DIR     <- here::here("results")
+# --- Interactive = FALSE → use hardcoded paths below ---
+INTERACTIVE <- FALSE
+if (!INTERACTIVE) {
+  if (REGION == "SN") {
+    astro_file  <- "data/SN_Astrocytes.rds"
+    neuron_file <- "data/SN_Neurons_Total.rds"
+    output_base <- "results"
+  } else {
+    astro_file  <- "data/CX_Astrocytes_withCov.rds"
+    neuron_file <- "data/CX_Neurons_Total_withCov.rds"
+    output_base <- "results"
+  }
+} else {
+  library(tcltk)
+  cat("Please select your ASTROCYTE RDS file...\n")
+  astro_file <- tk_choose.files(
+    caption = paste0("Select ", REGION, " ASTROCYTE RDS file"),
+    filters = matrix(c("RDS Files", ".rds"), 1, 2)
+  )
+  if (length(astro_file) == 0 || is.na(astro_file)) stop("No astrocyte file selected.")
+
+  cat("Please select your NEURON RDS file...\n")
+  neuron_file <- tk_choose.files(
+    caption = paste0("Select ", REGION, " NEURON RDS file"),
+    filters = matrix(c("RDS Files", ".rds"), 1, 2)
+  )
+  if (length(neuron_file) == 0 || is.na(neuron_file)) stop("No neuron file selected.")
+
+  cat("Please select OUTPUT folder...\n")
+  output_base <- tk_choose.dir(caption = "Select OUTPUT folder")
+  if (is.na(output_base)) stop("No folder selected.")
+}
 
 timestamp   <- format(Sys.time(), "%Y%m%d_%H%M")
 results_dir <- file.path(output_base,
@@ -909,6 +965,28 @@ methods_note <- data.frame(
   Section = c("Purpose", "Panel_Scoring", "Primary_Test", "Secondary_Test",
               "Effect_Size", "Interaction", "GeneLevelDE",
               "Multiple_Testing", "Interpretation_Note"),
+  Description = c(
+    paste0("PD vs Control comparison of 9 innate immune sub-panel scores in ",
+           "astrocytes and neurons. Region: ", REGION, "."),
+    paste0("Background-subtracted scoring (AddModuleScore-style): panel mean minus ",
+           "mean of expression-matched control genes (100 controls/gene, 25 bins). ",
+           "Aggregated to donor-level mean."),
+    paste0("Covariate-adjusted linear model: lm(score ~ ",
+           if (COVARIATES_ENABLED && length(covariate_cols_to_use) > 0)
+             paste(covariate_cols_to_use, collapse = " + ")
+           else "no covariates",
+           " + condition). Reports beta, SE, t, p for conditionPD."),
+    "Wilcoxon rank-sum (unadjusted), provided as robustness check.",
+    paste0("Hedges' g (bias-corrected Cohen's d). Positive = higher in PD. ",
+           "Thresholds: |g|<0.2 negligible, 0.2-0.5 small, 0.5-0.8 medium, >0.8 large."),
+    paste0("Condition x cell_type interaction: lm(score ~ covariates + condition * cell_type). ",
+           "Tests whether PD-Control difference is cell-type-specific."),
+    paste0("Per-gene Wilcoxon on donor-level mean expression for all immune panel genes. ",
+           "Supplementary to DESeq2 (Script 1)."),
+    "BH correction applied across 9 panels within each cell type.",
+    paste0("NULL results are expected and informative: if panel-level scores ",
+           "do not differ by condition, this supports the manuscript's coupling ",
+           "narrative — the signal is in co-regulation structure, not marginal levels.")
   )
 )
 addWorksheet(wb, "Methods")
@@ -977,6 +1055,15 @@ if (nrow(interact_df) > 0) {
   cat(sprintf("  Interaction: %d/%d panels with cell-type-specific PD effect (FDR<0.05)\n",
               n_int_sig, nrow(interact_df)))
 }
+
+cat("\n=== Narrative guidance ===\n")
+cat("If most panels are NULL: 'Innate immune pathway activity does not differ\n")
+cat("  significantly between PD and control at the donor level, consistent with\n")
+cat("  the coupling-not-level hypothesis — the disease signal resides in the\n")
+cat("  co-regulation structure between dsRNA sensing and immune execution.'\n\n")
+cat("If some panels are significant: these become the motivating context for\n")
+cat("  the coupling analysis (Script 4), e.g., 'Complement is elevated in PD\n")
+cat("  astrocytes; we next ask whether this elevation is coupled to dsRNA sensing.'\n")
 
 cat("\nCompleted:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
 cat("============================================================\n")

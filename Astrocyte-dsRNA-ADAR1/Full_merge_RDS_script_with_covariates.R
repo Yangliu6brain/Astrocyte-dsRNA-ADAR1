@@ -498,102 +498,42 @@ cat("    then run Section 13 to inject covariates.\n\n")
 rm(astro_diag); gc()
 
 # =============================================================================
-# SECTION 12: DONOR LOOKUP TABLE — FILL IN AFTER RUNNING SECTION 11
+# SECTION 12: DONOR COVARIATE TABLE (read from file, one row per donor)
 # =============================================================================
-# Instructions:
-#   - Copy the sample_id values printed above into the sample_id column
-#   - Fill in age, sex, pmi from your GSE_list_Demographic.xlsx file
-#   - Use exact same strings as printed (case-sensitive!)
-#   - sex: use "Male" or "Female"
-#   - pmi: in HOURS. If not available for a dataset, use NA
-#   - age: in YEARS. For age ranges (GSE253462), use midpoint
-#           e.g. "70-75" → 72.5, "<65" → 62, "80-85" → 82.5
+# CORRECTED VERSION (v2). The previous version built this table from four hand-typed
+# vectors (sample_id, age, sex, pmi) paired by position; the age/sex/pmi vectors were in a
+# different dataset order from sample_id, so GSE178146 and GSE202210 donors received
+# another donor's covariates. The table is now read from data/donor_covariates.csv
+# (one row per donor, keyed by the sample_id used in the RDS) and validated before use.
+#   age : years (GSE253462 age bands -> midpoint, e.g. "70-75" -> 72.5, "<65" -> 62; see age_source)
+#   sex : "Male" / "Female"
+#   pmi : hours; NA for GSE253462 (not available)
 
 cat("============================================================\n")
-cat("SECTION 12: Donor lookup table\n")
+cat("SECTION 12: Donor covariate table\n")
 cat("============================================================\n\n")
 
-# ============================================================
-# >>> EDIT THIS TABLE — paste your sample_ids from Section 11 output
-# ============================================================
+DONOR_TABLE <- "data/donor_covariates.csv"   # <-- path to the donor table
+donor_metadata <- read.csv(DONOR_TABLE, stringsAsFactors = FALSE, check.names = FALSE)
 
-donor_metadata <- data.frame(
-  
-  sample_id = c(
-    # ---- PASTE YOUR SAMPLE IDs HERE (from Section 11 output) ----
-    # Example format — replace with your actual values:
-    
-    # --- GSE178146 ---
-    "C36", "C48", "PDC05", "PDC22", "PDC34", "PDC87", "PDC91", "PD413", "PD416", "PD523", "PD666", "PD683", "PD732", "PD747",
-    # --- GSE202210 ---
-    "HSDG07HC", "HSDG10HC", "hsDG101HC", "hsDG13HC", "hsDG30HC", "hsDG99HC", "HSDG148PD", "HSDG199PD", "hsDG142PD", "hsDG151PD", "hsDG197PD", "hsDG208PD",
-    # --- GSE253462 ---
-    "T1619", "T1952", "T2017", "T2465", "T343", "T4174", "T4210", "T551", "T1976", "T233", "T257", "T290", "T308", "T362", "T3860", "T4162", "T777"
-    
-    # Note: The exact IDs above are PLACEHOLDERS.
-    # Run Section 11 first to get the real values from your RDS.
-  ),
-  
-  age = c(
-    # GSE202210 Controls (from your demographic sheet)
-    81, 70, 72, 65, 63, 69,
-    # GSE202210 PD
-    96, 86, 79, 81, 72, 77, 
-    
-    # GSE178146 Controls
-    68, 68, 58, 65, 90, 92, 85,
-    # GSE178146 PD
-    72, 85, 86, 93, 83, 81, 83,
-    
-    # GSE253462 Controls (midpoints: 75-80→77.5, 80-85→82.5, <65→62, 70-75→72.5)
-    82.5, 82.5, 72.5, 82.5, 62, 82.5, 72.5, 72.5,
-    # GSE253462 PD
-    62, 72.5, 67.5, 72.5, 77.5, 72.5, 72.5, 72.5, 77.5
-  ),
-  
-  sex = c(
-    # GSE202210 Controls
-    "Female", "Male", "Female", "Female", "Male", "Male",
-    # GSE202210 PD
-    "Male", "Male", "Male", "Female", "Female","Female", 
-    
-    # GSE178146 Controls
-    "Male", "Male", "Male", "Male", "Male", "Female", "Male",
-    # GSE178146 PD
-    "Female", "Female", "Female", "Female", "Female", "Male", "Male",
-    
-    # GSE253462 Controls
-    "Female", "Male", "Male", "Female", "Male", "Male", "Male", "Female",
-    # GSE253462 PD
-    "Male", "Male", "Female", "Male", "Male", "Female", "Male", "Male", "Female"
-  ),
-  
-  pmi = c(
-    # GSE202210 Controls (hours)
-    8, 10.5, 7, 19, 5, 11,
-    # GSE202210 PD
-    6, 13, 5.5, 8, 6, 7,
-    
-    # GSE178146 Controls
-    30, 10, 9, 12, 12, 24, 29,
-    # GSE178146 PD
-    14, 17, 9, 24, 24, 14, 22,
-    
-    # GSE253462: PMI NOT AVAILABLE — all NA
-    NA, NA, NA, NA, NA, NA, NA, NA,   # Controls
-    NA, NA, NA, NA, NA, NA, NA, NA, NA # PD
-  ),
-  
-  stringsAsFactors = FALSE
-)
-
-# Validate table
-cat(sprintf("Lookup table: %d donors defined\n", nrow(donor_metadata)))
-if (any(duplicated(donor_metadata$sample_id))) {
-  stop("DUPLICATE sample_ids found: ",
-       paste(donor_metadata$sample_id[duplicated(donor_metadata$sample_id)], collapse = ", "))
+# --- Validation (stop on any failure) ---
+fail <- character()
+need <- c("sample_id", "dataset", "condition", "age", "sex", "pmi")
+if (!all(need %in% names(donor_metadata))) fail <- c(fail, paste("missing columns:", paste(setdiff(need, names(donor_metadata)), collapse = ", ")))
+if (!length(fail)) {
+  if (nrow(donor_metadata) != 43 || anyDuplicated(donor_metadata$sample_id))
+    fail <- c(fail, sprintf("expected 43 unique sample_ids, found %d rows / %d unique", nrow(donor_metadata), length(unique(donor_metadata$sample_id))))
+  if (anyNA(donor_metadata$age) || anyNA(donor_metadata$sex)) fail <- c(fail, "missing age or sex")
+  if (!all(donor_metadata$sex %in% c("Male", "Female"))) fail <- c(fail, "sex must be Male or Female")
+  if (!is.numeric(donor_metadata$age) || any(donor_metadata$age < 18 | donor_metadata$age > 110)) fail <- c(fail, "age not numeric or out of range")
+  if (any(is.na(donor_metadata$pmi) != (donor_metadata$dataset == "GSE253462")))
+    fail <- c(fail, "PMI missingness is not exactly the GSE253462 donors")
+  if (!all(donor_metadata$condition %in% c("Control", "PD"))) fail <- c(fail, "condition must be Control or PD")
 }
-cat("No duplicate sample_ids — OK\n\n")
+if (length(fail)) stop("Donor table validation FAILED:\n  - ", paste(fail, collapse = "\n  - "))
+cat(sprintf("Donor table: %d donors | %s\n", nrow(donor_metadata),
+            paste(names(table(donor_metadata$dataset)), table(donor_metadata$dataset), collapse = ", ")))
+cat("Donor table validated - OK\n\n")
 
 # =============================================================================
 # SECTION 13: INJECT COVARIATES INTO SAVED RDS FILES
@@ -629,10 +569,13 @@ inject_covariates <- function(rds_path, donor_meta, output_dir) {
   
   cat(sprintf("  Matched: %d / %d donors\n", length(matched), length(donors_in_rds)))
   
-  if (length(unmatched) > 0) {
-    cat(sprintf("  WARNING: %d donors NOT in lookup table:\n", length(unmatched)))
-    cat(sprintf("    %s\n", paste(unmatched, collapse = ", ")))
-    cat("  These cells will get NA. Fix sample_id values in Section 12.\n")
+  # CORRECTED VERSION (v2): every donor in the RDS must have exactly one row in the donor table,
+  # and dataset / condition must agree between the RDS and the table (previously: warning + NA).
+  if (length(unmatched) > 0) stop(fname, ": donors not in the donor table: ", paste(unmatched, collapse = ", "))
+  i_tab <- match(as.character(meta[[donor_col]]), donor_meta$sample_id)
+  for (v in intersect(c("dataset", "condition"), colnames(meta))) {
+    bad <- unique(as.character(meta[[donor_col]])[as.character(meta[[v]]) != as.character(donor_meta[[v]][i_tab])])
+    if (length(bad)) stop(fname, ": ", v, " in the RDS disagrees with the donor table for: ", paste(bad, collapse = ", "))
   }
   
   if (length(matched) == 0) {
@@ -652,6 +595,13 @@ inject_covariates <- function(rds_path, donor_meta, output_dir) {
   obj$age <- as.numeric(age_lut[cell_ids])
   obj$sex <- as.character(sex_lut[cell_ids])
   obj$pmi <- as.numeric(pmi_lut[cell_ids])
+
+  # CORRECTED VERSION (v2): verify the injected values donor by donor against the table
+  chk <- unique(data.frame(sample_id = cell_ids, age = obj$age, sex = obj$sex, pmi = obj$pmi, stringsAsFactors = FALSE))
+  ref <- donor_meta[match(chk$sample_id, donor_meta$sample_id), ]
+  same <- chk$age == ref$age & chk$sex == ref$sex & ((is.na(chk$pmi) & is.na(ref$pmi)) | (!is.na(chk$pmi) & !is.na(ref$pmi) & chk$pmi == ref$pmi))
+  if (anyDuplicated(chk$sample_id) || anyNA(same) || !all(same)) stop(fname, ": injected covariates do not match the donor table")
+  cat(sprintf("  Injected covariates verified against the donor table for %d donors\n", nrow(chk)))
   
   # Report coverage
   n <- ncol(obj)
